@@ -1,4 +1,6 @@
 .data
+.data2
 __pycache__
 lightning_logs
 *.ckpt
+*.pkl
