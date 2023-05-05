@@ -1,8 +1,9 @@
-import ssl, logging, os, pickle
+import ssl, logging, os, pickle, warnings
 
 import h5py
 
 import numpy as np
+import pandas as pd
 
 import torch
 from torchvision import transforms
@@ -15,13 +16,13 @@ import models
 DATASET_ARGS = {"root":".data", "download":True}
 
 WORKER_COUNT = 0#4
-BATCH_SIZE = 128
+BATCH_SIZE = 256
 EPOCHS = 40
 
 LOADER_ARGS = {"batch_size":BATCH_SIZE, "num_workers":WORKER_COUNT, "persistent_workers":WORKER_COUNT>0}
 
 early_stop_callback = EarlyStopping(monitor="test_loss", patience=8, mode="min")
-TRAINER_ARGS = {"accelerator":"gpu", "devices":"auto", "max_epochs":EPOCHS, "precision":16, "callbacks":[early_stop_callback]}
+TRAINER_ARGS = {"accelerator":"gpu", "devices":"auto", "max_epochs":EPOCHS, "precision":16, "callbacks":[early_stop_callback], "gradient_clip_val":0.5, "detect_anomaly":False}
 
 # Parameter values
 DATASETS = {"fashionmnist":"fashion-mnist-784-euclidean.hdf5", "lastfm":"lastfm-64-dot.hdf5", "nytimes":"nytimes-256-angular.hdf5", "sift":"sift-128-euclidean.hdf5"}#{"fashionmnist":datasets.FashionMNIST}
@@ -32,7 +33,8 @@ TYPES = {
         "triplet":models.ReductionTriplet,
         "relaxed":models.ReductionWeightedSpaceConserving,
         "vae":models.ReductionVAE,
-        "identity":models.IdentityModel
+        "identity":models.IdentityModel,
+        "universal":models.ReductionUniversal
     }
 TYPE_TAGGED = {"autoenc":False, "basic":False, "relaxed":True}
 
@@ -120,7 +122,11 @@ def init():
     ssl._create_default_https_context = ssl._create_unverified_context
 
     # Hide lightning warnings
+    warnings.filterwarnings("ignore", ".*does not have many workers.*")
     logging.getLogger("lightning").setLevel(logging.ERROR)
+
+    # Pandas display
+    pd.set_option('display.max_rows', 500)
 
 def tryLoadPickle(filename, default):
     try:

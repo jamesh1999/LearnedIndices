@@ -1,3 +1,5 @@
+import numpy as np
+
 import torch
 from torch import nn
 
@@ -45,6 +47,59 @@ class TripletLoss(object):
         neg = b[1]*(~mask) + b[2]*mask
 
         return self.loss(b[0], pos, neg)
+    
+class SpaceConservingLoss2(object):
+    def __init__(self, p=2.0):
+        self.p = p
+
+    def __call__(self, a, b, device):
+        # Summing dimensions
+        sum_a = tuple(range(1, a.dim()))
+        sum_b = tuple(range(1, b.dim()))
+
+        # perm = torch.randperm(len(a), device=device)
+        perm = torch.roll(torch.arange(0, len(a), device=device), 1)
+
+        # L2 distances
+        da = a - a[perm]
+        da = da.square().sum(sum_a).abs().sqrt()
+        db = b - b[perm]
+        db = db.square().sum(sum_b).abs().sqrt()
+
+        return (da - db).abs().float_power(self.p).mean() # p-norm error
+    
+class TripletLoss2(object):
+    def __init__(self, distance_function=nn.PairwiseDistance(), repetitions=1, dimensions=None, **kwargs):
+        self.distance = distance_function
+        self.repetitions = repetitions
+        self.loss = nn.TripletMarginWithDistanceLoss(distance_function=distance_function, margin=0.1, **kwargs)
+        self.dimensions = dimensions
+
+    def __call__(self, a, b, device):
+        # a: batch, b: output
+        # original: anchors, perm1/2: pos/neg
+
+        total_loss = None
+        for i in range(1, self.repetitions+1):
+            perm1 = torch.roll(torch.arange(0, len(a), device=device), 3*i)
+            perm2 = torch.roll(torch.arange(0, len(a), device=device), 5*i)
+
+            # Distances
+            da1 = self.distance(a, a[perm1])
+            da2 = self.distance(a, a[perm2])
+
+            # Find pos/neg datapoints
+            mask = torch.gt(da2, da1).unsqueeze(1)
+
+            pos = b[perm1]*mask    + b[perm2]*(~mask)
+            neg = b[perm1]*(~mask) + b[perm2]*mask
+
+            if total_loss == None:
+                total_loss = self.loss(b, pos, neg)
+            else:
+                total_loss += self.loss(b, pos, neg)
+
+        return total_loss / self.repetitions
 
 class WeightedSpaceConservingLoss(SpaceConservingLoss):
     def __init__(self, **kwargs):
@@ -65,6 +120,8 @@ class WeightedSpaceConservingLoss(SpaceConservingLoss):
         db = pair_b[1] - pair_b[0]
         db = db.square().sum(sum_b).abs().sqrt()
 
+        # Reciprocal of distance in input space: if this pair is close, it is important to maintain that in the output space
+        # Reciprocal of distance in output space: if this pair is mapped close together, it had better be close in the input space
         weights = 1/da + 1/db
 
         return (weights * (da - db)).abs().float_power(self.p).mean() # p-norm error
@@ -86,8 +143,12 @@ class MaximumMeanDiscrepancyLoss(object):
         kxy = self.kernel(x, y)
         return torch.mean(kxx) - 2*torch.mean(kxy) + torch.mean(kyy)
 
+class L2Loss(object):
+    def __init__(self):
+        self.dist = nn.PairwiseDistance()
 
-
+    def __call__(self, a, b):
+        return torch.mean(self.dist(a, b))
 
 
 class BasicNN(object):
@@ -310,7 +371,8 @@ class ReductionVAE(pl.LightningModule):
         return enc
     
 class ReductionUniversal(pl.LightningModule):
-    def __init__(self, model, crecon=1, calpha=1, clambda=3000, cortho=0, cspace=0, ctriplet=0, dimensions=20, **kwargs):
+    def __init__(self, model, crecon=1, calpha=1, clambda=3000, cortho=0, cspace=0, ctriplet=0,
+                 triplet_repetitions=1, dimensions=20, encoder_wd=0, decoder_wd=0, optimiser="adam", **kwargs):
         super().__init__()
         self.save_hyperparameters()
 
@@ -320,9 +382,15 @@ class ReductionUniversal(pl.LightningModule):
         self.cortho = cortho
         self.cspace = cspace
         self.ctriplet = ctriplet
+        self.encoder_wd = encoder_wd
+        self.decoder_wd = decoder_wd
         self.dimensions = dimensions
-        self.recon_loss = nn.MSELoss()
+        self.optimiser = optimiser
+
+        self.recon_loss = L2Loss()
         self.mmd_loss = MaximumMeanDiscrepancyLoss()
+        self.space_loss = SpaceConservingLoss2()
+        self.triplet_loss = TripletLoss2(dimensions=self.dimensions, repetitions=triplet_repetitions)
 
         # Create model
         self.encoder = model.encoder(vae=True, **model.params, dimensions=dimensions, **kwargs)
@@ -341,22 +409,23 @@ class ReductionUniversal(pl.LightningModule):
         loss_recon = self.recon_loss(inp, dec)
         loss_kl = -0.5 * torch.sum(1 + lnvar - mu*mu - lnvar.exp()) / inp.size(dim=0) # Mean. across batch
         loss_mmd = self.mmd_loss(samples, mu)
-        loss_ortho = torch.norm(mu.T * mu - torch.eye(self.dimensions))
-        loss_space = self.loss_space(inp, mu)
-        loss_triplet = self.triplet_loss(inp, mu)
-        loss = \
-            self.crecon * loss_recon + \
-            (1-self.calpha)*loss_kl + \
-            (self.calpha + self.clambda - 1)*loss_mmd + \
-            self.cortho * loss_ortho + \
-            self.cspace * loss_space + \
+        loss_ortho = 0#torch.norm(torch.matmul(mu.T, mu) - torch.eye(self.dimensions, device=self.device))
+        loss_space = self.space_loss(inp, mu, self.device)
+        loss_triplet = self.triplet_loss(inp, mu, self.device)
+        loss = (
+            self.crecon * loss_recon +
+            (1-self.calpha)*loss_kl +
+            (self.calpha + self.clambda - 1)*loss_mmd +
+            self.cortho * loss_ortho +
+            self.cspace * loss_space +
             self.ctriplet * loss_triplet
+        )
         
         others = {
             "loss_recon":loss_recon,
             "loss_kl":loss_kl,
             "loss_mmd":loss_mmd,
-            "loss_ortho":loss_ortho,
+            #"loss_ortho":loss_ortho,
             "loss_space":loss_space,
             "loss_triplet":loss_triplet
         }
@@ -364,20 +433,29 @@ class ReductionUniversal(pl.LightningModule):
 
     def training_step(self, batch, batch_idx):
         mu, dec, lnvar = self(batch)
-        loss, loss_r, loss_kl, loss_mmd = self.loss(batch, dec, mu, lnvar)
+        loss, others = self.loss(batch, dec, mu, lnvar)
         self.log("train_loss", loss.item())
-        self.log("train_lossr", loss_r.item())
-        self.log("train_losskl", loss_kl.item())
-        self.log("train_lossmmd", loss_mmd.item())
+        for k, v in others.items():
+            self.log(f"train_{k}", v.item())
         return loss
 
     def configure_optimizers(self):
-        return torch.optim.Adam(self.parameters())
+        args = [
+            {"params": self.encoder.parameters(), "weight_decay": self.encoder_wd},
+            {"params": self.decoder.parameters(), "weight_decay": self.decoder_wd},
+        ]
+
+        if self.optimiser == "adam":
+            return torch.optim.Adam(args)
+        elif self.optimiser == "sgd":
+            return torch.optim.SGD(args, 0.001)
 
     def validation_step(self, batch, batch_idx):
         mu, dec, lnvar = self(batch)
-        loss, _,_,_ = self.loss(batch, dec, mu, lnvar)
+        loss, others = self.loss(batch, dec, mu, lnvar)
         self.log("test_loss", loss.item())
+        for k, v in others.items():
+            self.log(f"test_{k}", v.item())
         return loss
 
     def predict_step(self, batch, batch_idx):
