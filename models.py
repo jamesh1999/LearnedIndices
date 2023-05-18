@@ -49,31 +49,45 @@ class TripletLoss(object):
         return self.loss(b[0], pos, neg)
     
 class SpaceConservingLoss2(object):
-    def __init__(self, p=2.0):
+    def __init__(self, p=2.0, repetitions=1, outer_dist=None, inner_dist=None):
         self.p = p
+        self.repetitions = repetitions
+
+        if inner_dist == None:
+            inner_dist = outer_dist
+        self.idist = inner_dist.torch
+        self.odist = outer_dist.torch
 
     def __call__(self, a, b, device):
-        # Summing dimensions
-        sum_a = tuple(range(1, a.dim()))
-        sum_b = tuple(range(1, b.dim()))
 
         # perm = torch.randperm(len(a), device=device)
-        perm = torch.roll(torch.arange(0, len(a), device=device), 1)
+        total_loss = None
+        for i in range(1, self.repetitions+1):
+            perm = torch.roll(torch.arange(0, len(a), device=device), i)
 
-        # L2 distances
-        da = a - a[perm]
-        da = da.square().sum(sum_a).abs().sqrt()
-        db = b - b[perm]
-        db = db.square().sum(sum_b).abs().sqrt()
+            # L2 distances
+            da = self.odist(a, a[perm])
+            db = self.idist(b, b[perm])
 
-        return (da - db).abs().float_power(self.p).mean() # p-norm error
+            if total_loss == None:
+                total_loss = (da - db).abs_().mean() # p-norm error
+            else:
+                total_loss += (da - db).abs_().mean() # p-norm error
+
+        return total_loss / self.repetitions
     
 class TripletLoss2(object):
-    def __init__(self, distance_function=nn.PairwiseDistance(), repetitions=1, dimensions=None, **kwargs):
-        self.distance = distance_function
+    def __init__(self, repetitions=1,
+            outer_dist=None, inner_dist=None, dimensions=None, **kwargs):
         self.repetitions = repetitions
-        self.loss = nn.TripletMarginWithDistanceLoss(distance_function=distance_function, margin=0.1, **kwargs)
         self.dimensions = dimensions
+
+        if inner_dist == None:
+            inner_dist = outer_dist
+        self.idist = inner_dist.torch
+        self.odist = outer_dist.torch
+
+        self.loss = nn.TripletMarginWithDistanceLoss(distance_function=self.idist, margin=0.1, **kwargs)
 
     def __call__(self, a, b, device):
         # a: batch, b: output
@@ -85,8 +99,8 @@ class TripletLoss2(object):
             perm2 = torch.roll(torch.arange(0, len(a), device=device), 5*i)
 
             # Distances
-            da1 = self.distance(a, a[perm1])
-            da2 = self.distance(a, a[perm2])
+            da1 = self.odist(a, a[perm1])
+            da2 = self.odist(a, a[perm2])
 
             # Find pos/neg datapoints
             mask = torch.gt(da2, da1).unsqueeze(1)
@@ -101,30 +115,71 @@ class TripletLoss2(object):
 
         return total_loss / self.repetitions
 
-class WeightedSpaceConservingLoss(SpaceConservingLoss):
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
+class WeightedSpaceConservingLoss(object):
+    def __init__(self, p=1.0, repetitions=1):
+        self.p = p
+        self.repetitions = repetitions
 
-    def __call__(self, a, b):
+    def __call__(self, a, b, device):
         # Summing dimensions
         sum_a = tuple(range(1, a.dim()))
         sum_b = tuple(range(1, b.dim()))
 
-        # Pair up inputs / encodings
-        pair_a = torch.chunk(a, 2)
-        pair_b = torch.chunk(b, 2)
+        # perm = torch.randperm(len(a), device=device)
+        total_loss = None
+        for i in range(1, self.repetitions+1):
+            perm = torch.roll(torch.arange(0, len(a), device=device), i)
 
-        # L2 distances
-        da = pair_a[1] - pair_a[0]
-        da = da.square().sum(sum_a).abs().sqrt()
-        db = pair_b[1] - pair_b[0]
-        db = db.square().sum(sum_b).abs().sqrt()
+            # L2 distances
+            da = a - a[perm]
+            da = da.square_().sum(sum_a).abs_().sqrt_()
+            db = b - b[perm]
+            db = db.square_().sum(sum_b).abs_().sqrt_()
 
-        # Reciprocal of distance in input space: if this pair is close, it is important to maintain that in the output space
-        # Reciprocal of distance in output space: if this pair is mapped close together, it had better be close in the input space
-        weights = 1/da + 1/db
+            # Reciprocal of distance in input space: if this pair is close, it is important to maintain that in the output space
+            # Reciprocal of distance in output space: if this pair is mapped close together, it had better be close in the input space
+            # Smoothed
+            weights = 1/da + 1/db
 
-        return (weights * (da - db)).abs().float_power(self.p).mean() # p-norm error
+            if total_loss == None:
+                total_loss = (weights * (da - db).abs_()).mean() # p-norm error
+            else:
+                total_loss += (weights * (da - db).abs_()).mean() # p-norm error
+
+        return total_loss / self.repetitions
+
+class WeightedSpaceConservingLoss2(object):
+    def __init__(self, p=1.0, repetitions=1, outer_dist=None, inner_dist=None):
+        self.p = p
+        self.repetitions = repetitions
+
+        if inner_dist == None:
+            inner_dist = outer_dist
+        self.idist = inner_dist.torch
+        self.odist = outer_dist.torch
+
+    def __call__(self, a, b, device):
+
+        # perm = torch.randperm(len(a), device=device)
+        total_loss = None
+        for i in range(1, self.repetitions+1):
+            perm = torch.roll(torch.arange(0, len(a), device=device), i)
+
+            # L2 distances
+            da = self.odist(a, a[perm])
+            db = self.idist(b, b[perm])
+
+            # Reciprocal of distance in input space: if this pair is close, it is important to maintain that in the output space
+            # Reciprocal of distance in output space: if this pair is mapped close together, it had better be close in the input space
+            # Smoothed
+            weights = 1/(1+da) + 1/(1+db)
+
+            if total_loss == None:
+                total_loss = (weights * (da - db).abs_()).mean() # p-norm error
+            else:
+                total_loss += (weights * (da - db).abs_()).mean() # p-norm error
+
+        return total_loss / self.repetitions
     
 class MaximumMeanDiscrepancyLoss(object):
     def kernel(self, x, y): # Gaussian kernel, perhaps only suited to L2 distance?
@@ -143,12 +198,12 @@ class MaximumMeanDiscrepancyLoss(object):
         kxy = self.kernel(x, y)
         return torch.mean(kxx) - 2*torch.mean(kxy) + torch.mean(kyy)
 
-class L2Loss(object):
-    def __init__(self):
-        self.dist = nn.PairwiseDistance()
+class AveDistLoss(object):
+    def __init__(self, dist):
+        self.dist = dist.torch
 
     def __call__(self, a, b):
-        return torch.mean(self.dist(a, b))
+        return self.dist(a, b).abs_().mean()
 
 
 class BasicNN(object):
@@ -172,7 +227,8 @@ class BasicNN(object):
                 self.var = nn.Linear(inputs if depth == 1 else width, dimensions)
 
         def forward(self, x):
-            x = self.model(x)
+            if self.model != None:
+                x = self.model(x)
             mu = self.mu(x)
             if not self.vae:
                 return mu
@@ -278,51 +334,16 @@ class BasicConv(object):
 # ----------------
 # Lightning models
 # ----------------
-
-class ReductionAutoEncoder(pl.LightningModule):
-    def __init__(self, model, **kwargs):
-        super().__init__()
-        self.save_hyperparameters()
-
-        self.loss = nn.MSELoss()
-
-        # Create model
-        self.encoder = model.encoder(**model.params, **kwargs)
-        self.decoder = model.decoder(**model.params, **kwargs)
-
-    def forward(self, x):
-        enc = self.encoder(x)
-        dec = self.decoder(enc)
-        return enc, dec
-
-    def training_step(self, batch, batch_idx):
-        _, dec = self(batch)
-        loss = self.loss(batch, dec)
-        self.log("train_loss", loss.item())
-        return loss
-
-    def configure_optimizers(self):
-        return torch.optim.Adam(self.parameters())
-
-    def validation_step(self, batch, batch_idx):
-        _, dec = self(batch)
-        loss = self.loss(batch, dec)
-        self.log("test_loss", loss.item())
-        return loss
-
-    def predict_step(self, batch, batch_idx):
-        enc, _ = self(batch)
-        return enc
     
 class ReductionVAE(pl.LightningModule):
-    def __init__(self, model, ca=1, cl=3000, dimensions=20, **kwargs):
+    def __init__(self, model, calpha=1, clambda=3000, dimensions=20, outer_dist=None, **kwargs):
         super().__init__()
         self.save_hyperparameters()
 
-        self.ca = ca
-        self.cl = cl
+        self.ca = calpha
+        self.cl = clambda
         self.dimensions = dimensions
-        self.recon_loss = nn.MSELoss()
+        self.recon_loss = AveDistLoss(outer_dist)
         self.mmd_loss = MaximumMeanDiscrepancyLoss()
 
         # Create model
@@ -372,7 +393,7 @@ class ReductionVAE(pl.LightningModule):
     
 class ReductionUniversal(pl.LightningModule):
     def __init__(self, model, crecon=1, calpha=1, clambda=3000, cortho=0, cspace=0, ctriplet=0,
-                 triplet_repetitions=1, dimensions=20, encoder_wd=0, decoder_wd=0, optimiser="adam", **kwargs):
+                 triplet_repetitions=1, dimensions=20, encoder_wd=0, decoder_wd=0, optimiser="adam", outer_dist=None, **kwargs):
         super().__init__()
         self.save_hyperparameters()
 
@@ -387,7 +408,7 @@ class ReductionUniversal(pl.LightningModule):
         self.dimensions = dimensions
         self.optimiser = optimiser
 
-        self.recon_loss = L2Loss()
+        self.recon_loss = AveDistLoss(outer_dist)
         self.mmd_loss = MaximumMeanDiscrepancyLoss()
         self.space_loss = SpaceConservingLoss2()
         self.triplet_loss = TripletLoss2(dimensions=self.dimensions, repetitions=triplet_repetitions)
@@ -461,13 +482,69 @@ class ReductionUniversal(pl.LightningModule):
     def predict_step(self, batch, batch_idx):
         enc, _, _ = self(batch)
         return enc
-
-class ReductionSpaceConserving(pl.LightningModule):
-    def __init__(self, model, **kwargs):
+    
+class ReductionSCAE(pl.LightningModule):
+    def __init__(self, model, crecon=0, cspace=0,
+                 triplet_repetitions=1, dimensions=20, outer_dist=None, inner_dist=None, **kwargs):
         super().__init__()
         self.save_hyperparameters()
 
-        self.loss = SpaceConservingLoss()
+        self.crecon = crecon
+        self.cspace = cspace
+        self.dimensions = dimensions
+
+        self.recon_loss = AveDistLoss(outer_dist)
+        self.space_loss = WeightedSpaceConservingLoss2(repetitions=triplet_repetitions, outer_dist=outer_dist, inner_dist=inner_dist)
+
+        # Create model
+        self.encoder = model.encoder(**model.params, dimensions=dimensions, **kwargs)
+        self.decoder = model.decoder(**model.params, dimensions=dimensions, **kwargs)
+
+    def forward(self, x):
+        enc = self.encoder(x)
+        dec = self.decoder(enc)
+        return enc, dec
+    
+    def loss(self, inp, dec, enc):
+        loss_recon = self.recon_loss(inp, dec)
+        loss_space = self.space_loss(inp, enc, self.device)
+        loss = self.crecon * loss_recon + self.cspace * loss_space
+        
+        others = {
+            "loss_recon":loss_recon,
+            "loss_space":loss_space
+        }
+        return loss, others
+
+    def training_step(self, batch, batch_idx):
+        enc, dec = self(batch)
+        loss, others = self.loss(batch, dec, enc)
+        self.log("train_loss", loss.item())
+        for k, v in others.items():
+            self.log(f"train_{k}", v.item())
+        return loss
+
+    def configure_optimizers(self):
+        return torch.optim.Adam(self.parameters())
+
+    def validation_step(self, batch, batch_idx):
+        enc, dec = self(batch)
+        loss, others = self.loss(batch, dec, enc)
+        self.log("test_loss", loss.item())
+        for k, v in others.items():
+            self.log(f"test_{k}", v.item())
+        return loss
+
+    def predict_step(self, batch, batch_idx):
+        enc, _ = self(batch)
+        return enc
+
+class ReductionSpaceConserving(pl.LightningModule):
+    def __init__(self, model, triplet_repetitions=1, power=2.0, outer_dist=None, inner_dist=None, **kwargs):
+        super().__init__()
+        self.save_hyperparameters()
+
+        self.loss = SpaceConservingLoss2(repetitions=triplet_repetitions, p=power, outer_dist=outer_dist, inner_dist=inner_dist)
 
         # Create model
         self.model = model.encoder(**model.params, **kwargs)
@@ -477,7 +554,7 @@ class ReductionSpaceConserving(pl.LightningModule):
 
     def training_step(self, batch, batch_idx):
         out = self(batch)
-        loss = self.loss(batch, out)
+        loss = self.loss(batch, out, self.device)
         self.log("train_loss", loss.item())
         return loss
 
@@ -486,30 +563,26 @@ class ReductionSpaceConserving(pl.LightningModule):
 
     def validation_step(self, batch, batch_idx):
         out = self(batch)
-        loss = self.loss(batch, out)
+        loss = self.loss(batch, out, self.device)
         self.log("test_loss", loss.item())
         return loss
     
 class ReductionTriplet(pl.LightningModule):
-    def __init__(self, model, **kwargs):
+    def __init__(self, model, triplet_repetitions=1, outer_dist=None, inner_dist=None, **kwargs):
         super().__init__()
         self.save_hyperparameters()
 
-        self.loss = TripletLoss()
+        self.loss = TripletLoss2(repetitions=triplet_repetitions, outer_dist=outer_dist, inner_dist=inner_dist)
 
         # Create model
         self.model = model.encoder(**model.params, **kwargs)
 
     def forward(self, x):
         return self.model(x)
-    
-    def process_batch(self, batch):
-        anchor, a, b = batch
-        anchor_out, a_out, b_out = self(anchor), self(a), self(b)
-        return self.loss((anchor, a, b), (anchor_out, a_out, b_out))
 
     def training_step(self, batch, batch_idx):
-        loss = self.process_batch(batch)
+        out = self(batch)
+        loss = self.loss(batch, out, self.device)
         self.log("train_loss", loss.item())
         return loss
 
@@ -517,16 +590,45 @@ class ReductionTriplet(pl.LightningModule):
         return torch.optim.Adam(self.parameters())
 
     def validation_step(self, batch, batch_idx):
-        loss = self.process_batch(batch)
+        out = self(batch)
+        loss = self.loss(batch, out, self.device)
+        self.log("test_loss", loss.item())
+        return loss
+    
+class ReductionWeightedSpaceConserving(pl.LightningModule):
+    def __init__(self, model, triplet_repetitions=1, power=2.0, **kwargs):
+        super().__init__()
+        self.save_hyperparameters()
+
+        self.loss = WeightedSpaceConservingLoss(repetitions=triplet_repetitions, p=power)
+
+        # Create model
+        self.model = model.encoder(**model.params, **kwargs)
+
+    def forward(self, x):
+        return self.model(x)
+
+    def training_step(self, batch, batch_idx):
+        out = self(batch)
+        loss = self.loss(batch, out, self.device)
+        self.log("train_loss", loss.item())
+        return loss
+
+    def configure_optimizers(self):
+        return torch.optim.Adam(self.parameters())
+
+    def validation_step(self, batch, batch_idx):
+        out = self(batch)
+        loss = self.loss(batch, out, self.device)
         self.log("test_loss", loss.item())
         return loss
 
-class ReductionWeightedSpaceConserving(pl.LightningModule):
-    def __init__(self, model, **kwargs):
+class ReductionWeightedSpaceConserving2(pl.LightningModule):
+    def __init__(self, model, triplet_repetitions=1, power=2.0, outer_dist=None, inner_dist=None, **kwargs):
         super().__init__()
         self.save_hyperparameters()
 
-        self.loss = WeightedSpaceConservingLoss()
+        self.loss = WeightedSpaceConservingLoss2(repetitions=triplet_repetitions, p=power, outer_dist=outer_dist, inner_dist=inner_dist)
 
         # Create model
         self.model = model.encoder(**model.params, **kwargs)
@@ -536,7 +638,7 @@ class ReductionWeightedSpaceConserving(pl.LightningModule):
 
     def training_step(self, batch, batch_idx):
         out = self(batch)
-        loss = self.loss(batch, out)
+        loss = self.loss(batch, out, self.device)
         self.log("train_loss", loss.item())
         return loss
 
@@ -545,7 +647,7 @@ class ReductionWeightedSpaceConserving(pl.LightningModule):
 
     def validation_step(self, batch, batch_idx):
         out = self(batch)
-        loss = self.loss(batch, out)
+        loss = self.loss(batch, out, self.device)
         self.log("test_loss", loss.item())
         return loss
 

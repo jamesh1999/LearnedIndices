@@ -1,3 +1,5 @@
+import threading, queue
+
 import torch
 import pytorch_lightning as pl
 
@@ -7,9 +9,49 @@ from sklearn.neighbors import KDTree
 
 import utils
 
+THREADS = 12
+
+class MultithreadedJob(object):
+    def __init__(self, jobs, work_func, result_func):
+        self.jobs = queue.Queue()
+        self.results = queue.Queue()
+        self.job_cnt = 0
+        for job in jobs:
+            self.jobs.put(job)
+            self.job_cnt += 1
+
+        self.work_func = work_func
+        self.result_func = result_func
+
+    def work(self):
+        while True:
+            try:
+                job = self.jobs.get_nowait()
+                self.results.put(self.work_func(job))
+                self.jobs.task_done()
+            except queue.Empty:
+                return
+
+    def run(self):
+        threads = []
+        for _ in range(THREADS):
+            t = threading.Thread(target=self.work)
+            t.start()
+            threads.append(t)
+
+        for _ in range(self.job_cnt):
+            result = self.results.get()
+            self.result_func(result)
+
+        for t in threads:
+            t.join()
 
 
-def analyseResults(dataset : utils.H5Loader, queries, results : np.ndarray):
+
+def analyseResults(dataset : utils.H5Loader, queries, results : np.ndarray, neighbours=None):
+    if not isinstance(neighbours, np.ndarray):
+        neighbours = dataset.neighbours
+    
     errors = []
     failed = 0
     for q,rs in zip(queries, results):
@@ -22,8 +64,8 @@ def analyseResults(dataset : utils.H5Loader, queries, results : np.ndarray):
             distances = np.sum(np.square(rraws - qraw), 1)
             r = rs[np.argmin(distances)]
 
-        x = np.argmax(dataset.neighbours[q] == r)
-        if dataset.neighbours[q][x] == r:
+        x = np.argmax(neighbours[q] == r)
+        if neighbours[q][x] == r:
             errors.append(x)
         else:
             failed += 1
@@ -33,7 +75,7 @@ def analyseResults(dataset : utils.H5Loader, queries, results : np.ndarray):
         "mean":np.mean(errors),
         "std":np.std(errors),
         "acc":100*np.mean(errors == 0),
-        "fail":100*(failed / len(results)),
+        "fail":100*(failed / np.float64(len(results))),
         "raw":errors
     }
 

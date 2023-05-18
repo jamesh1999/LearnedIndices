@@ -31,6 +31,8 @@ if __name__ == "__main__":
     parser.add_argument("--encoder_wd", type=float, default=0)
     parser.add_argument("--decoder_wd", type=float, default=0)
 
+    parser.add_argument("--power", type=float, default=2)
+
     parser.add_argument("--optimiser", choices=["adam","sgd"], default="adam")
     
     args = parser.parse_args()
@@ -62,6 +64,7 @@ if __name__ == "__main__":
     # Create & Train Model
     # ------------------------
     constants = {
+        "dimensions":args.dimensions,
         "crecon":args.crecon,
         "calpha":args.calpha,
         "clambda":args.clambda,
@@ -70,10 +73,21 @@ if __name__ == "__main__":
         "ctriplet":args.ctriplet,
         "encoder_wd":args.encoder_wd,
         "decoder_wd":args.decoder_wd,
-        "optimiser":args.optimiser
+        "optimiser":args.optimiser,
+        "power":args.power,
+        "triplet_repetitions":args.triplet_reps
     }
 
-    model = utils.TYPES[args.type](utils.MODELS[args.model], inputs=inputs, dimensions=args.dimensions, triplet_repetitions=args.triplet_reps, **constants)
+    fdist = utils.DISTANCES[args.dataset]
+
+    model = utils.TYPES[args.type](
+        utils.MODELS[args.model],
+        inputs=inputs,
+        width=1000,
+        inner_dist=None,
+        outer_dist=fdist,
+        **constants
+    )
     trainer = pl.Trainer(logger=logger, **utils.TRAINER_ARGS)
     if args.type != "identity":
         trainer.fit(model, train_loader, test_loader)

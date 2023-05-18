@@ -1,22 +1,38 @@
 import subprocess
 
-DATASETS = ["fashionmnist"]
-MODELS = ["universal"]
-DIMENSIONS = [40]
-CONSTANT_FLAGS = ["--crecon","--calpha","--clambda","--cortho","--cspace","--ctriplet","--triplet_reps", "--encoder_wd", "--decoder_wd"]
+DATASETS = [
+    ("nytrunc", [128, 26]),
+    ("lasttrunc", [48, 20])
+    ]
+MODELS = ["basic", "triplet", "relaxed", "relaxed2", "vae"]
+CONSTANT_FLAGS = ["--triplet_reps"]
 CONSTANTS = [
-    [4,1,0,0,0,0.25,50,0,0],
-    [4,1,0,0,0,0.5,50,0,0],
-    [4,1,0,0,0,1,50,0,0],
-    [4,1,0,0,0,2,50,0,0],
-    [4,1,0,0,0,4,50,0,0],
+    # [1],
+    # [2],
+    # [4],
+    # [8],
+    # [16],
+    # [28],
+    [50],
+]
+TYPES = [
+    ["-t", "basic"],
+
+    ["-t", "relaxedold"],
+
+    ["-t", "relaxed"],
+
+    # ["-t", "vae", "--calpha", 1, "--clambda", 0], # AE
+    # ["-t", "vae", "--calpha", 0, "--clambda", 1], # VAE
+
+    ["-t", "triplet"],
 ]
 
-for dataset in DATASETS:
-    for model in MODELS:
-        for dims in DIMENSIONS:
-            for cs in CONSTANTS:
-                constants = []
-                for i, f in enumerate(CONSTANT_FLAGS):
-                    constants += [f, cs[i]]
-                subprocess.run(map(str, ["python", "train_models.py", "-D", dataset, "-m", "basicnn", "-t", model, "-d", dims] + constants))
+for t in TYPES:
+    for dataset, dims in DATASETS:
+        for d in dims:
+            for reps in [50]:
+                subprocess.run(
+                    map(str, [
+                        "python", "train_models.py", "-D", dataset, "-m", "basicnn", "-d", d, "--triplet_reps", reps
+                    ] + t))
